@@ -6,8 +6,8 @@ import remarkGfm from 'remark-gfm';
 
 const MODEL_NAME = 'gemini-2.5-pro';
 
-const INITIAL_SYSTEM_INSTRUCTION = `あなたは、高度な専門知識を持つAIアシスタントです。ユーザーの質問に対し、初回応答として、網羅的で精度の高い、論理的な回答を生成することがあなたのタスクです。
-
+// --- 第一段階：初期応答生成用 ---
+const INITIAL_SYSTEM_INSTRUCTION =  `あなたは、高度な専門知識を持つAIアシスタントです。ユーザーの質問に対し、初回応答として、網羅的で精度の高い、論理的な回答を生成することがあなたのタスクです。
 以下の指示に厳密に従ってください:
 1.  **正確性と厳密性を最優先**してください。情報が不確かな場合や推測に基づく場合は、その旨を明確に記述してください。
 2.  回答は**多角的な視点**から構成し、単純な二項対立に陥ることを避けてください。
@@ -15,13 +15,15 @@ const INITIAL_SYSTEM_INSTRUCTION = `あなたは、高度な専門知識を持�
 4.  定量的な分析が可能な場合は、**具体的な数値や数式を用いて**説明してください。
 
 注意: この応答は、他のAIエージェントが利用するための中間生成物であり、ユーザーには直接表示されません。冗長な表現を避け、核心的な情報に焦点を当てて簡潔に記述してください。`;
+
+// --- 第二段階：深掘り分析用（5つのモード）---
 const DEEP_DIVE_INSTRUCTIONS = {
   strategy: `あなたは「戦略比較」を専門とするAIアナリストです。与えられた情報に基づき、以下のタスクを厳密に実行してください。
 1. 目的達成のための、互いに異なる具体的な戦略を3つ提案する。
 2. 各戦略について、「メリット」「デメリット」「実行の前提条件」を明確に整理してリスト化する。
 3. 3つの戦略を最も効果が高いと思われる順にランク付けし、その順位付けの根拠と、順位によるトレードオフ（例：1位は効果が高いがリスクも大きい、など）を明示する。`,
 
-  challenge: `あなたは「前提・思考挑戦」を専門とする、内省的、批判的に考えることを得意とするAIクリティークです。与えられた情報や提案に対し、以下のタスクを厳密に実行してください。
+  challenge: `あなたは「前提・思考挑戦」を専門とするAIクリティークです。与えられた情報や提案に対し、以下のタスクを厳密に実行してください。
 1. 議論の「盲点」や見落とされている論点を、鋭く複数指摘する。
 2. 暗黙的に設定されている、あるいは疑われていない重要な「前提」を特定し、それに挑戦する問いを立てる（例：「そもそも、この目標設定は正しいのか？」）。
 3. 主流の意見からは見落とされがちな、全く異なる視点やオルタナティブな解釈を提示する。`,
@@ -46,8 +48,7 @@ const DEEP_DIVE_INSTRUCTIONS = {
 const SYNTHESIZER_SYSTEM_INSTRUCTION = `あなたは、最高の統合能力を持つマスターAIです。あなたの最重要目標は、ユーザーの質問に対する最終的で完璧な回答を記述することです。
 あなたには、ユーザーの質問と、5つの異なる専門的観点（戦略比較、前提挑戦、専門家向け圧縮、ハイレベル洞察、成功チェックリスト）から深掘りされた分析結果が与えられます。
 これらの多様な分析結果を批判的に吟味し、それぞれの長所を組み合わせ、矛盾点を解消し、一貫した論理構造を持つ、単一の最終回答を構築してください。
-あなたの出力が、ユーザーが目にする唯一の完成品です。分析プロセスを説明するのではなく、完成された回答そのものを生成してください。
-};
+あなたの出力が、ユーザーが目にする唯一の完成品です。分析プロセスを説明するのではなく、完成された回答そのものを生成してください。`;
 
 interface Message {
   role: 'user' | 'model';
@@ -91,11 +92,14 @@ const LoadingIndicator: FC<{ status: string; time: number }> = ({ status, time }
       <span className="loading-status">{status}</span>
       <span className="timer-display">{(time / 1000).toFixed(1)}s</span>
     </div>
-    <div className={`progress-bars-container ${status.startsWith('Initializing') ? 'initial' : 'refining'}`}>
+    {/* statusに応じてプログレスバーの数を変更 */}
+    <div className={`progress-bars-container ${status.startsWith('Deepening') ? 'deep-dive' : 'initial'}`}>
       <div className="progress-bar"></div>
       <div className="progress-bar"></div>
       <div className="progress-bar"></div>
       <div className="progress-bar"></div>
+      {/* 深掘り分析の時だけ5本目のバーを表示 */}
+      {status.startsWith('Deepening') && <div className="progress-bar"></div>}
     </div>
   </div>
 );
@@ -125,58 +129,59 @@ const App: FC = () => {
     return () => clearInterval(interval);
   }, [isLoading]);
 
-const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-  event.preventDefault();
-  const formData = new FormData(event.currentTarget);
-  const userInput = formData.get('userInput') as string;
-  event.currentTarget.reset();
-  if (!userInput.trim()) return;
 
-  const userMessage: Message = { role: 'user', parts: [{ text: userInput }] };
-  const currentMessages = [...messages, userMessage];
-  setMessages(currentMessages);
-  setIsLoading(true);
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const userInput = formData.get('userInput') as string;
+    event.currentTarget.reset();
+    if (!userInput.trim()) return;
 
-  try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
-    
-    const mainChatHistory: Content[] = currentMessages.slice(0, -1).map(msg => ({
-      role: msg.role,
-      parts: msg.parts,
-    }));
-    const currentUserTurn: Content = { role: 'user', parts: [{ text: userInput }] };
+    const userMessage: Message = { role: 'user', parts: [{ text: userInput }] };
+    const currentMessages = [...messages, userMessage];
+    setMessages(currentMessages);
+    setIsLoading(true);
 
-    // === STEP 1: Initial Responses (Concurrent) ===
-    setLoadingStatus('Initializing agents...');
-    const initialAgentPromises = Array(4).fill(0).map(() => 
-      ai.models.generateContent({
-        model: MODEL_NAME,
-        contents: [...mainChatHistory, currentUserTurn],
-        config: { systemInstruction: INITIAL_SYSTEM_INSTRUCTION },
-      })
-    );
-    const initialResponses = await Promise.all(initialAgentPromises);
-    const initialAnswers = initialResponses.map(res => res.text);
-    const combinedInitialContext = `以下は、4つのエージェントによって生成された初期応答です。これらの多様な視点を、後続の分析の基礎情報としてください。\n\n--- 初期応答 ---\n1. ${initialAnswers[0]}\n\n2. ${initialAnswers[1]}\n\n3. ${initialAnswers[2]}\n\n4. ${initialAnswers[3]}\n---`;
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+      
+      const mainChatHistory: Content[] = currentMessages.slice(0, -1).map(msg => ({
+        role: msg.role,
+        parts: msg.parts,
+      }));
+      const currentUserTurn: Content = { role: 'user', parts: [{ text: userInput }] };
+
+      // === STEP 1: Initial Responses (Concurrent) ===
+      setLoadingStatus('Initializing agents...');
+      const initialAgentPromises = Array(4).fill(0).map(() => 
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: [...mainChatHistory, currentUserTurn],
+          config: { systemInstruction: INITIAL_SYSTEM_INSTRUCTION },
+        })
+      );
+      const initialResponses = await Promise.all(initialAgentPromises);
+      const initialAnswers = initialResponses.map(res => res.text);
+      const combinedInitialContext = `以下は、4つのエージェントによって生成された初期応答です。これらの多様な視点を、後続の分析の基礎情報としてください。\n\n--- 初期応答 ---\n1. ${initialAnswers[0]}\n\n2. ${initialAnswers[1]}\n\n3. ${initialAnswers[2]}\n\n4. ${initialAnswers[3]}\n---`;
 
 
-    // === STEP 2: Deep Dive Analysis (Concurrent) ===
-    setLoadingStatus('Deepening analysis...');
-    const deepDiveTurn: Content = { role: 'user', parts: [{ text: `${userInput}\n\n---INTERNAL CONTEXT---\n${combinedInitialContext}` }] };
-    
-    const deepDivePromises = Object.values(DEEP_DIVE_INSTRUCTIONS).map(instruction => 
-      ai.models.generateContent({
-        model: MODEL_NAME,
-        contents: [...mainChatHistory, deepDiveTurn],
-        config: { systemInstruction: instruction },
-      })
-    );
-    const deepDiveResponses = await Promise.all(deepDivePromises);
-    const deepDiveAnswers = deepDiveResponses.map(res => res.text);
+      // === STEP 2: Deep Dive Analysis (Concurrent) ===
+      setLoadingStatus('Deepening analysis...');
+      const deepDiveTurn: Content = { role: 'user', parts: [{ text: `${userInput}\n\n---INTERNAL CONTEXT---\n${combinedInitialContext}` }] };
+      
+      const deepDivePromises = Object.values(DEEP_DIVE_INSTRUCTIONS).map(instruction => 
+        ai.models.generateContent({
+          model: MODEL_NAME,
+          contents: [...mainChatHistory, deepDiveTurn],
+          config: { systemInstruction: instruction },
+        })
+      );
+      const deepDiveResponses = await Promise.all(deepDivePromises);
+      const deepDiveAnswers = deepDiveResponses.map(res => res.text);
 
-    // === STEP 3: Final Synthesis ===
-    setLoadingStatus('Synthesizing final response...');
-    const synthesizerContext = `ユーザーの質問に対し、5つの専門エージェントが以下の通り多角的な分析を行いました。これらの分析を統合し、最高の最終回答を作成してください。`
+      // === STEP 3: Final Synthesis ===
+      setLoadingStatus('Synthesizing final response...');
+      const synthesizerContext = `ユーザーの質問に対し、5つの専門エージェントが以下の通り多角的な分析を行いました。これらの分析を統合し、最高の最終回答を作成してください。
 
 --- 分析結果 ---
 1.  **戦略比較**:
@@ -194,27 +199,26 @@ const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
 5.  **成功チェックリスト**:
     "${deepDiveAnswers[4]}"
 ---`;
-    const synthesizerTurn: Content = { role: 'user', parts: [{ text: `${userInput}\n\n---INTERNAL CONTEXT---\n${synthesizerContext}` }] };
+      const synthesizerTurn: Content = { role: 'user', parts: [{ text: `${userInput}\n\n---INTERNAL CONTEXT---\n${synthesizerContext}` }] };
 
-    const finalResult = await ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: [...mainChatHistory, synthesizerTurn],
-      config: { systemInstruction: SYNTHESIZER_SYSTEM_INSTRUCTION },
-    });
-    
-    setIsLoading(false);
+      const finalResult = await ai.models.generateContent({
+        model: MODEL_NAME,
+        contents: [...mainChatHistory, synthesizerTurn],
+        config: { systemInstruction: SYNTHESIZER_SYSTEM_INSTRUCTION },
+      });
+      
+      setIsLoading(false);
 
-    const finalResponseText = finalResult.text;
-    const finalMessage: Message = { role: 'model', parts: [{ text: finalResponseText }] };
-    setMessages(prev => [...prev, finalMessage]);
+      const finalResponseText = finalResult.text;
+      const finalMessage: Message = { role: 'model', parts: [{ text: finalResponseText }] };
+      setMessages(prev => [...prev, finalMessage]);
 
-  } catch (error) {
-    console.error('Error sending message to agents:', error);
-    setIsLoading(false);
-    setMessages(prev => [...prev, { role: 'model', parts: [{ text: 'Sorry, I encountered an error. Please try again.' }] }]);
-  }
-};
-
+    } catch (error) {
+      console.error('Error sending message to agents:', error);
+      setIsLoading(false);
+      setMessages(prev => [...prev, { role: 'model', parts: [{ text: 'Sorry, I encountered an error. Please try again.' }] }]);
+    }
+  };
 
   return (
     <div className="chat-container">
