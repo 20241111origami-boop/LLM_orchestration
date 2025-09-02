@@ -176,7 +176,7 @@ const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
 
     // === STEP 3: Final Synthesis ===
     setLoadingStatus('Synthesizing final response...');
-    const synthesizerContext = `ユーザーの質問に対し、5つの専門エージェントが以下の通り多角的な分析を行いました。これらの分析を統合し、最高の最終回答を作成してください。`;
+    const synthesizerContext = `ユーザーの質問に対し、5つの専門エージェントが以下の通り多角的な分析を行いました。これらの分析を統合し、最高の最終回答を作成してください。`
 
 --- 分析結果 ---
 1.  **戦略比較**:
